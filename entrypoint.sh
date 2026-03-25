@@ -7,6 +7,7 @@ log() {
 
 # Configuration from environment variables
 MOUNT_PATH="${MOUNT_PATH:-/pvc-mount}"
+BASE_MOUNT_PATH="${BASE_MOUNT_PATH:-/pvc-mount}"
 REMOTE_URL="${GIT_URL}"
 BRANCH="${GIT_BRANCH:-main}"
 SYNC_MODE="${SYNC_STRATEGY:-polling}"
@@ -14,12 +15,27 @@ POLL_INTERVAL="${POLL_INTERVAL:-300}"
 AUTH_TYPE="${AUTH_TYPE:-none}"
 
 log "=== Git Sync Container Starting ==="
-log "Mount path: $MOUNT_PATH"
+log "Base mount path: $BASE_MOUNT_PATH"
+log "Target mount path: $MOUNT_PATH"
 log "Remote URL: $REMOTE_URL"
 log "Branch: $BRANCH"
 log "Sync mode: $SYNC_MODE"
 log "Poll interval: ${POLL_INTERVAL}s"
 log "Auth type: $AUTH_TYPE"
+
+# Validate that MOUNT_PATH is within BASE_MOUNT_PATH
+if [[ "$MOUNT_PATH" != "$BASE_MOUNT_PATH"* ]]; then
+    log "ERROR: MOUNT_PATH ($MOUNT_PATH) must be within BASE_MOUNT_PATH ($BASE_MOUNT_PATH)"
+    log "ERROR: This ensures files are synced to the correct PVC location"
+    exit 1
+fi
+
+# Calculate relative path for logging
+RELATIVE_PATH="${MOUNT_PATH#$BASE_MOUNT_PATH}"
+if [ -z "$RELATIVE_PATH" ]; then
+    RELATIVE_PATH="/"
+fi
+log "Relative path within PVC: $RELATIVE_PATH"
 
 setup_ssh_auth() {
     log "Setting up SSH authentication"
@@ -66,10 +82,28 @@ EOF
 perform_sync() {
     log "=== Starting sync operation ==="
     
-    # Check mount path
+    # Ensure BASE_MOUNT_PATH exists (should already be mounted by Kubernetes)
+    if [ ! -d "$BASE_MOUNT_PATH" ]; then
+        log "ERROR: Base mount path does not exist: $BASE_MOUNT_PATH"
+        log "ERROR: PVC may not be mounted correctly"
+        exit 1
+    fi
+    
+    # Check and create the target mount path
     if [ ! -d "$MOUNT_PATH" ]; then
-        log "Creating mount directory: $MOUNT_PATH"
+        log "Creating target directory: $MOUNT_PATH"
         mkdir -p "$MOUNT_PATH"
+        chmod 755 "$MOUNT_PATH"
+        log "Created directory: $MOUNT_PATH"
+    else
+        log "Target directory already exists: $MOUNT_PATH"
+    fi
+    
+    # Verify we can write to the directory
+    if [ ! -w "$MOUNT_PATH" ]; then
+        log "ERROR: Cannot write to target directory: $MOUNT_PATH"
+        log "ERROR: Check permissions on PVC mount"
+        exit 1
     fi
     
     log "Changing to mount directory: $MOUNT_PATH"
@@ -104,6 +138,10 @@ perform_sync() {
     local current_commit
     current_commit=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
     log "Sync completed successfully. Current commit: $current_commit"
+    
+    # List files to verify they're in the right place
+    log "Files in target directory ($MOUNT_PATH):"
+    ls -la "$MOUNT_PATH" | head -20
     log "=== Sync operation finished ==="
 }
 
