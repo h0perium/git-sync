@@ -14,6 +14,21 @@ SYNC_MODE="${SYNC_STRATEGY:-polling}"
 POLL_INTERVAL="${POLL_INTERVAL:-300}"
 AUTH_TYPE="${AUTH_TYPE:-none}"
 
+# Parse command line arguments
+MANUAL_SYNC=false
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --manual-sync)
+            MANUAL_SYNC=true
+            shift
+            ;;
+        *)
+            echo "Unknown option: $1"
+            exit 1
+            ;;
+    esac
+done
+
 # Check if script is being sourced or executed
 if [[ "${BASH_SOURCE[0]}" != "${0}" ]]; then
     # Script is being sourced - just define functions, don't run main execution
@@ -177,6 +192,13 @@ if [ "$IS_SOURCED" = false ]; then
     setup_auth
     perform_sync
     
+    # If manual sync requested, run it and exit
+    if [ "$MANUAL_SYNC" = true ]; then
+        log "Manual sync requested via command line"
+        manual_sync
+        exit $?
+    fi
+    
     # Run according to sync mode
     case "$SYNC_MODE" in
         polling)
@@ -188,13 +210,14 @@ if [ "$IS_SOURCED" = false ]; then
             done
             ;;
         webhook)
-            log "Webhook mode enabled. Waiting for manual triggers..."
-            # In webhook mode, container stays running
-            # Manual sync can be triggered via kubectl exec
-            tail -f /dev/null
-            ;;
-        oneshot)
-            log "Oneshot mode completed. Exiting."
+            log "Webhook mode enabled. Waiting for manual triggers via API"
+            # In webhook mode, the pod stays running and waits for manual triggers
+            # The panel will execute /usr/local/bin/entrypoint.sh --manual-sync via kubectl exec
+            # Keep the pod alive but don't do anything automatically
+            while true; do
+                sleep 3600  # Sleep for 1 hour, just to keep the pod alive
+                log "Webhook pod still alive, waiting for manual triggers"
+            done
             ;;
         *)
             log "ERROR: Unknown sync mode: $SYNC_MODE"
