@@ -14,28 +14,14 @@ SYNC_MODE="${SYNC_STRATEGY:-polling}"
 POLL_INTERVAL="${POLL_INTERVAL:-300}"
 AUTH_TYPE="${AUTH_TYPE:-none}"
 
-log "=== Git Sync Container Starting ==="
-log "Base mount path: $BASE_MOUNT_PATH"
-log "Target mount path: $MOUNT_PATH"
-log "Remote URL: $REMOTE_URL"
-log "Branch: $BRANCH"
-log "Sync mode: $SYNC_MODE"
-log "Poll interval: ${POLL_INTERVAL}s"
-log "Auth type: $AUTH_TYPE"
-
-# Validate that MOUNT_PATH is within BASE_MOUNT_PATH
-if [[ "$MOUNT_PATH" != "$BASE_MOUNT_PATH"* ]]; then
-    log "ERROR: MOUNT_PATH ($MOUNT_PATH) must be within BASE_MOUNT_PATH ($BASE_MOUNT_PATH)"
-    log "ERROR: This ensures files are synced to the correct PVC location"
-    exit 1
+# Check if script is being sourced or executed
+if [[ "${BASH_SOURCE[0]}" != "${0}" ]]; then
+    # Script is being sourced - just define functions, don't run main execution
+    IS_SOURCED=true
+else
+    # Script is being executed - run main execution
+    IS_SOURCED=false
 fi
-
-# Calculate relative path for logging
-RELATIVE_PATH="${MOUNT_PATH#$BASE_MOUNT_PATH}"
-if [ -z "$RELATIVE_PATH" ]; then
-    RELATIVE_PATH="/"
-fi
-log "Relative path within PVC: $RELATIVE_PATH"
 
 setup_ssh_auth() {
     log "Setting up SSH authentication"
@@ -77,6 +63,16 @@ EOF
     export GIT_ASKPASS=/tmp/git-auth/askpass.sh
     export GIT_TERMINAL_PROMPT=0
     log "HTTP authentication configured"
+}
+
+setup_auth() {
+    log "Setting up authentication"
+    case "$AUTH_TYPE" in
+        ssh_key) setup_ssh_auth ;;
+        token|basic) setup_http_auth ;;
+        none) log "No authentication configured" ;;
+        *) log "WARNING: Unknown auth type: $AUTH_TYPE" ;;
+    esac
 }
 
 perform_sync() {
@@ -145,39 +141,64 @@ perform_sync() {
     log "=== Sync operation finished ==="
 }
 
-# Main execution
-log "Setting up authentication"
-case "$AUTH_TYPE" in
-    ssh_key) setup_ssh_auth ;;
-    token|basic) setup_http_auth ;;
-    none) log "No authentication configured" ;;
-    *) log "WARNING: Unknown auth type: $AUTH_TYPE" ;;
-esac
+# Manual trigger function - can be called when script is sourced
+manual_sync() {
+    log "=== Manual sync triggered ==="
+    setup_auth
+    perform_sync
+}
 
-# Initial sync
-perform_sync
-
-# Run according to sync mode
-case "$SYNC_MODE" in
-    polling)
-        log "Polling mode enabled. Interval: ${POLL_INTERVAL}s"
-        while true; do
-            sleep "$POLL_INTERVAL"
-            log "=== Polling sync triggered ==="
-            perform_sync || log "Polling sync failed, will retry next interval"
-        done
-        ;;
-    webhook)
-        log "Webhook mode enabled. Waiting for manual triggers..."
-        # In webhook mode, container stays running
-        # Manual sync can be triggered via kubectl exec
-        tail -f /dev/null
-        ;;
-    oneshot)
-        log "Oneshot mode completed. Exiting."
-        ;;
-    *)
-        log "ERROR: Unknown sync mode: $SYNC_MODE"
+# Only run main execution if script is executed directly (not sourced)
+if [ "$IS_SOURCED" = false ]; then
+    log "=== Git Sync Container Starting ==="
+    log "Base mount path: $BASE_MOUNT_PATH"
+    log "Target mount path: $MOUNT_PATH"
+    log "Remote URL: $REMOTE_URL"
+    log "Branch: $BRANCH"
+    log "Sync mode: $SYNC_MODE"
+    log "Poll interval: ${POLL_INTERVAL}s"
+    log "Auth type: $AUTH_TYPE"
+    
+    # Validate that MOUNT_PATH is within BASE_MOUNT_PATH
+    if [[ "$MOUNT_PATH" != "$BASE_MOUNT_PATH"* ]]; then
+        log "ERROR: MOUNT_PATH ($MOUNT_PATH) must be within BASE_MOUNT_PATH ($BASE_MOUNT_PATH)"
+        log "ERROR: This ensures files are synced to the correct PVC location"
         exit 1
-        ;;
-esac
+    fi
+    
+    # Calculate relative path for logging
+    RELATIVE_PATH="${MOUNT_PATH#$BASE_MOUNT_PATH}"
+    if [ -z "$RELATIVE_PATH" ]; then
+        RELATIVE_PATH="/"
+    fi
+    log "Relative path within PVC: $RELATIVE_PATH"
+    
+    # Setup authentication and perform initial sync
+    setup_auth
+    perform_sync
+    
+    # Run according to sync mode
+    case "$SYNC_MODE" in
+        polling)
+            log "Polling mode enabled. Interval: ${POLL_INTERVAL}s"
+            while true; do
+                sleep "$POLL_INTERVAL"
+                log "=== Polling sync triggered ==="
+                perform_sync || log "Polling sync failed, will retry next interval"
+            done
+            ;;
+        webhook)
+            log "Webhook mode enabled. Waiting for manual triggers..."
+            # In webhook mode, container stays running
+            # Manual sync can be triggered via kubectl exec
+            tail -f /dev/null
+            ;;
+        oneshot)
+            log "Oneshot mode completed. Exiting."
+            ;;
+        *)
+            log "ERROR: Unknown sync mode: $SYNC_MODE"
+            exit 1
+            ;;
+    esac
+fi
